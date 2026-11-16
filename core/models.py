@@ -86,6 +86,21 @@ class CoefficientSize(models.Model):
 
     def __str__(self): return f"{self.get_category_display()} [{self.min_count}-{self.max_count}人]: {self.k_value}"
 
+    def clean(self):
+        super().clean()
+        if any(value is None for value in (self.min_count, self.max_count, self.k_value)):
+            return  # Field validation reports missing/invalid form values.
+        if self.min_count < 0 or self.max_count < self.min_count:
+            raise ValidationError("人数区间必须满足 0 ≤ 最小人数 ≤ 最大人数。")
+        if self.k_value <= 0:
+            raise ValidationError({'k_value': '系数必须大于0。'})
+        overlapping = type(self).objects.filter(
+            category=self.category, min_count__lte=self.max_count,
+            max_count__gte=self.min_count,
+        ).exclude(pk=self.pk)
+        if overlapping.exists():
+            raise ValidationError("同一课程类别的人数区间不能重叠。")
+
     @classmethod
     def get_k_by_count(cls, category, count):
         rule = cls.objects.filter(category=category, min_count__lte=count, max_count__gte=count).first()
@@ -199,7 +214,11 @@ class TheoryWorkload(BaseWorkload):
         return round(result, 2)
 
     def save(self, *args, **kwargs):
+        if kwargs.get('update_fields') is not None and not kwargs['update_fields']:
+            return
         self.total_workload = self.calculate()
+        if kwargs.get('update_fields') is not None:
+            kwargs['update_fields'] = set(kwargs['update_fields']) | {'total_workload'}
         super().save(*args, **kwargs)
 
 # 辅助方法：获取班级名称字符串（给导出用）
@@ -236,6 +255,11 @@ class PracticeWorkload(BaseWorkload):
         verbose_name = "5.实践环节录入"; verbose_name_plural = verbose_name
 
     def clean(self):
+        super().clean()
+        if self.practice_type == 'internship' and not self.internship_rule_id:
+            raise ValidationError({'internship_rule': '实习类必须选择指导系数规则。'})
+        if self.practice_type == 'thesis' and not self.thesis_category:
+            raise ValidationError({'thesis_category': '请选择毕业设计类别。'})
         if self.practice_type == 'lab_intern' and not self.lab_card_proof:
             raise ValidationError({'lab_card_proof': '合规校验：上机实习需上传上机卡。'})
 
@@ -254,7 +278,11 @@ class PracticeWorkload(BaseWorkload):
         return 0.0
 
     def save(self, *args, **kwargs):
+        if kwargs.get('update_fields') is not None and not kwargs['update_fields']:
+            return
         self.total_workload = self.calculate()
+        if kwargs.get('update_fields') is not None:
+            kwargs['update_fields'] = set(kwargs['update_fields']) | {'total_workload'}
         super().save(*args, **kwargs)
 
     # ★★★ 新增：获取班级名称字符串（用于导出） ★★★
@@ -287,6 +315,18 @@ class ExperimentWorkload(models.Model):
 
     class Meta: verbose_name = "6.实验教学录入"; verbose_name_plural = verbose_name
 
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.hours is not None and self.hours < 0:
+            errors['hours'] = '学时数不能为负数。'
+        if self.class_count is not None and self.class_count < 1:
+            errors['class_count'] = '班级数必须至少为1。'
+        if self.subsidy is not None and self.subsidy < 0:
+            errors['subsidy'] = '补贴不能为负数。'
+        if errors:
+            raise ValidationError(errors)
+
     def calculate(self):
         k = self.difficulty_rule.value if self.difficulty_rule else 1.0
         p_map = {1: 1.3, 2: 2.0, 3: 2.6, 4: 3.0, 5: 3.4}
@@ -295,7 +335,11 @@ class ExperimentWorkload(models.Model):
         return round(t21 * 0.8 + self.subsidy, 2)
 
     def save(self, *args, **kwargs):
+        if kwargs.get('update_fields') is not None and not kwargs['update_fields']:
+            return
         self.total_workload = self.calculate()
+        if kwargs.get('update_fields') is not None:
+            kwargs['update_fields'] = set(kwargs['update_fields']) | {'total_workload'}
         super().save(*args, **kwargs)
 
     # ★★★ 新增：获取班级名称字符串 ★★★
